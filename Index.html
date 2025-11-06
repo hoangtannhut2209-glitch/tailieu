@@ -1,0 +1,620 @@
+<!-- Index.html -->
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chấm Công</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- Include CSS -->
+    <?!= include('CSS'); ?>
+</head>
+<body>
+    <!-- Loading Spinner -->
+    <div id="loading" class="loading-overlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Đang tải...</p>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="header-left">
+                <button class="menu-toggle" id="menuToggle">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <h1 class="header-title">
+                    <i class="fas fa-clock"></i>
+                    Theo dõi tăng ca
+                </h1>
+            </div>
+            <div class="header-right">
+                <div class="queue-status idle" id="queueStatus">
+                    <i class="fas fa-circle"></i>
+                    <span>Đồng bộ</span>
+                </div>
+                <div class="current-date" id="currentDate"></div>
+                <button class="logout-btn" id="logoutBtn" title="Đăng xuất" style="display: none;">
+                    <i class="fas fa-sign-out-alt"></i>
+                    <span id="currentUser"></span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="sidebar" id="sidebar">
+        <div class="nav-header">
+            <div class="nav-logo">
+                <i class="fas fa-user-clock"></i>
+                <span>Theo dõi tăng ca</span>
+            </div>
+            <button class="nav-close" id="navClose">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <ul class="nav-menu">
+            <li class="nav-item active" data-page="attendance">
+                <a href="#" class="nav-link">
+                    <i class="fas fa-calendar-check"></i>
+                    <span>Theo dõi tăng ca</span>
+                </a>
+            </li>
+            <li class="nav-item" data-page="bulk">
+                <a href="#" class="nav-link">
+                    <i class="fas fa-users-cog"></i>
+                    <span>Chấm hàng loạt</span>
+                </a>
+            </li>
+            <li class="nav-item" data-page="overview">
+                <a href="#" class="nav-link">
+                    <i class="fas fa-calendar-alt"></i>
+                    <span>Timeline</span>
+                </a>
+            </li>
+            <li class="nav-item" data-page="statistics">
+                <a href="#" class="nav-link">
+                    <i class="fas fa-chart-bar"></i>
+                    <span>Thống kê</span>
+                </a>
+            </li>
+            <li class="nav-item" data-page="employees">
+                <a href="#" class="nav-link">
+                    <i class="fas fa-list"></i>
+                    <span>Nhân sự</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+
+    <!-- Overlay for mobile -->
+    <div class="overlay" id="overlay"></div>
+
+    <!-- Main Content -->
+    <main class="main-content" id="mainContent">
+        
+        <!-- Attendance Page -->
+        <div class="page active" id="attendancePage">
+            <div class="page-header">
+                <h2><i class="fas fa-calendar-check"></i> Theo dõi tăng ca</h2>
+            </div>
+
+            <div class="attendance-content">
+                <div class="attendance-left">
+                    <div class="month-selector">
+                        <button class="btn btn-outline" id="prevMonth">
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <span class="current-month" id="currentMonth"></span>
+                        <button class="btn btn-outline" id="nextMonth">
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+
+                    <select class="form-select" id="employeeSelect">
+                        <option value="">Chọn Nhân sự...</option>
+                    </select>
+
+                    <div class="employee-info" id="employeeInfo" style="display: none;">
+                        <div class="employee-card">
+                            <div class="employee-avatar">
+                                <i class="fas fa-user"></i>
+                            </div>
+                            <div class="employee-details">
+                                <h3 id="employeeName"></h3>
+                                <p id="employeeDepartment"></p>
+                                <div class="employee-stats">
+                                  <div id="presentDays">
+                                    <div class="stat">
+                                      <i class="fas fa-calendar-day"></i>
+                                      Ngày công: <span>0</span>
+                                    </div>
+                                  </div>
+                                  <span class="stat">
+                                    <i class="fas fa-percentage"></i>
+                                    <span id="attendanceRate">0%</span> điểm danh
+                                  </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="legend-color present"></div>
+                            <span>Đủ công</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color halfday"></div>
+                            <span>Nửa công</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color absent"></div>
+                            <span>Vắng mặt</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color late"></div>
+                            <span>Đi muộn</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color leave"></div>
+                            <span>Nghỉ phép</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color weekend"></div>
+                            <span>Cuối tuần</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="calendar-container">
+                    <div class="calendar" id="calendar">
+                        <div class="calendar-header">
+                            <div class="calendar-day">T2</div>
+                            <div class="calendar-day">T3</div>
+                            <div class="calendar-day">T4</div>
+                            <div class="calendar-day">T5</div>
+                            <div class="calendar-day">T6</div>
+                            <div class="calendar-day">T7</div>
+                            <div class="calendar-day weekend">CN</div>
+                        </div>
+                        <div class="calendar-body" id="calendarBody">
+                            <!-- Calendar days will be generated here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bulk Attendance Page -->
+        <div class="page" id="bulkPage">
+            <div class="page-header">
+                <h2><i class="fas fa-users-cog"></i> Chấm Công Hàng Loạt</h2>
+            </div>
+
+            <!-- Bulk Controls -->
+            <div class="bulk-controls">
+                <div class="bulk-toolbar">
+                    <div class="bulk-form">
+                        <div class="form-group">
+                            <label for="bulkDate">Ngày:</label>
+                            <button type="button" id="bulkDateBtn" class="form-input" style="cursor: pointer; text-align: left;">
+                              <i class="fas fa-calendar-alt"></i> Chọn ngày...
+                            </button>
+                        </div>
+                        <div class="form-group">
+                            <label>Trạng thái:</label>
+                            <div class="bulk-status-dropdown" id="bulkStatusDropdown">
+                                <div class="status-icon present">
+                                    <i class="fas fa-check"></i>
+                                </div>
+                                <span id="bulkSelectedStatusText">Đủ công</span>
+                                <i class="fas fa-chevron-down dropdown-arrow"></i>
+                                
+                                <!-- Dropdown menu -->
+                                <div class="dropdown-menu" id="bulkStatusDropdownMenu">
+                                    <div class="dropdown-item" data-status="present">
+                                        <div class="status-icon present"><i class="fas fa-check"></i></div>
+                                        <span>Đủ công</span>
+                                    </div>
+                                    <div class="dropdown-item" data-status="halfday">
+                                        <div class="status-icon halfday"><i class="fas fa-check-circle"></i></div>
+                                        <span>Nửa công</span>
+                                    </div>
+                                    <div class="dropdown-item" data-status="absent">
+                                        <div class="status-icon absent"><i class="fas fa-times"></i></div>
+                                        <span>Vắng mặt</span>
+                                    </div>
+                                    <div class="dropdown-item" data-status="late">
+                                        <div class="status-icon late"><i class="fas fa-clock"></i></div>
+                                        <span>Đi muộn</span>
+                                    </div>
+                                    <div class="dropdown-item" data-status="leave">
+                                        <div class="status-icon leave"><i class="fas fa-calendar-times"></i></div>
+                                        <span>Nghỉ phép</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Phần giờ tăng ca cho bulk -->
+                        <div class="bulk-overtime-section">
+                            <div class="bulk-overtime-inputs">
+                                <div class="bulk-overtime-label">
+                                    <i class="fas fa-clock"></i>
+                                    <label>Tăng ca:</label>
+                                </div>
+                                <div class="form-group">
+                                    <input type="number" id="bulkOvertimeHours" class="form-input" min="0" max="12" step="0.5" placeholder="0" value="">
+                                </div>
+                                <div class="form-group">
+                                    <select id="bulkOvertimeMultiplier" class="form-select">
+                                        <option value="">-Chọn-</option>
+                                        <option value="1.5">x1.5</option>
+                                        <option value="2">x2</option>
+                                        <option value="3">x3</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="bulk-actions">
+                        <button class="btn btn-outline" id="selectAllBtn">
+                            <i class="fas fa-check-square"></i> Chọn tất cả
+                        </button>
+                        <button class="btn btn-outline" id="clearSelectionBtn">
+                            <i class="fas fa-times"></i> Bỏ chọn
+                        </button>
+                        <button class="btn btn-primary" id="bulkSubmitBtn" disabled>
+                            <i class="fas fa-save"></i> Theo dõi tăng ca
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bulk-status-row">
+                    <!-- Batch Progress - Left Side -->
+                    <div class="batch-progress" id="batchProgress">
+                        <div class="progress-header">
+                            <h4>Đang xử lý chấm công hàng loạt...</h4>
+                        </div>
+                        <div class="progress-container">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                            <span class="progress-percent" id="progressPercent">0%</span>
+                        </div>
+                    </div>
+
+                    <!-- Selection Info - Right Side -->
+                    <div class="selection-info" id="selectionInfo">
+                        <i class="fas fa-info-circle"></i>
+                        <span>Chọn nhân viên để chấm công hàng loạt</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Employee Grid -->
+            <div class="employee-grid" id="employeeGrid">
+                <!-- Employee cards will be generated here -->
+            </div>
+        </div>
+        
+        <!-- Overview Page -->
+        <div class="page" id="overviewPage">
+            <div class="page-header">
+                <h2><i class="fas fa-calendar-alt"></i> Timeline</h2>
+                <div class="page-actions">
+                    <select class="form-select" id="departmentFilter">
+                        <option value="">Tất cả bộ phận</option>
+                    </select>
+                    <div class="month-selector">
+                        <button class="btn btn-outline" id="timelinePrevMonth">
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <span class="current-month" id="timelineCurrentMonth"></span>
+                        <button class="btn btn-outline" id="timelineNextMonth">
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+                    <button class="btn btn-primary" id="exportTimelineBtn">
+                        <i class="fas fa-download"></i> Tải Excel
+                    </button>
+                </div>
+            </div>
+
+            <div class="timeline-container" id="timelineContainer">
+                <!-- Timeline sẽ được tạo ở đây -->
+            </div>
+        </div>
+
+        <!-- Statistics Page -->
+        <div class="page" id="statisticsPage">
+            <div class="page-header">
+                <h2><i class="fas fa-chart-bar"></i> Thống Kê</h2>
+                <div class="page-actions">
+                    <select class="form-select" id="statsMonth"></select>
+                    <select class="form-select" id="statsYear"></select>
+                    <select class="form-select" id="statsDepartment">
+                        <option value="">Tất cả phòng ban</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="statistics-content" id="statisticsContent">
+                <div class="empty-state">
+                    <i class="fas fa-chart-bar"></i>
+                    <h3>Chọn tháng và nhấn "Tạo báo cáo" để xem thống kê</h3>
+                </div>
+            </div>
+        </div>
+
+        <!-- Employees Page -->
+        <div class="page" id="employeesPage">
+            <div class="page-header">
+                <h2><i class="fas fa-list"></i> Nhân sự</h2>
+                <div class="page-actions">
+                    <button class="btn btn-primary" id="addEmployeeBtn">
+                        <i class="fas fa-plus"></i> Thêm nhân sự
+                    </button>
+                </div>
+            </div>
+
+            <div class="employee-management">
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" placeholder="Tìm kiếm nhân sự..." id="employeeSearch">
+                </div>
+
+                <div class="employee-table-container">
+                    <table class="employee-table">
+                        <thead>
+                            <tr>
+                                <th>Mã NV</th>
+                                <th>Tên nhân sự</th>
+                                <th>Tên đăng nhập</th>
+                                <th>Mật khẩu</th>
+                                <th>Quyền</th>
+                                <th>Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody id="employeeTableBody">
+                            <!-- Employee rows will be generated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Employee Modal -->
+    <div class="modal" id="employeeModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Thêm Nhân sự</h3>
+                <button class="modal-close" id="modalClose">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+              <form id="employeeForm">
+                  <!-- Dòng 1: Mã nhân sự | Tên nhân sự -->
+                  <div class="form-row">
+                      <div class="form-group form-col">
+                          <label for="employeeCode">Mã Nhân sự</label>
+                          <input type="text" id="employeeCode" class="form-input" placeholder="Mã Nhân sự">
+                      </div>
+                      <div class="form-group form-col">
+                          <label for="modalEmployeeName">Tên Nhân sự</label>
+                          <input type="text" id="modalEmployeeName" class="form-input" placeholder="Nhập tên nhân sự" required>
+                      </div>
+                  </div>
+                  
+                  <!-- Dòng 2: Phòng ban -->
+                  <div class="form-group">
+                      <label for="employeeDept">Bộ phận</label>
+                      <input type="text" id="employeeDept" class="form-input" placeholder="Bộ phận" required>
+                  </div>
+                  
+                  <!-- Dòng 3: Tên đăng nhập | Mật khẩu | Quyền -->
+                  <div class="form-row">
+                      <div class="form-group form-col">
+                          <label for="employeeUsername">Tên đăng nhập</label>
+                          <input type="text" id="employeeUsername" class="form-input" placeholder="Tên đăng nhập">
+                      </div>
+                      <div class="form-group form-col">
+                          <label for="employeePassword">Mật khẩu</label>
+                          <input type="text" id="employeePassword" class="form-input" placeholder="Mật khẩu">
+                      </div>
+                      <div class="form-group form-col">
+                          <label for="employeeRole">Quyền</label>
+                          <select id="employeeRole" class="form-select" required>
+                              <option value="">Chọn quyền</option>
+                              <option value="Admin">Admin</option>
+                              <option value="User">User</option>
+                          </select>
+                      </div>
+                  </div>
+
+                  <!-- Dòng 4: Avatar -->
+                  <div class="form-group">
+                    <label for="employeeAvatar">Ảnh đại diện (URL)</label>
+                    <input type="url" id="employeeAvatar" class="form-input" placeholder="https://example.com/avatar.jpg">
+                  </div>
+              </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="modalCancel">Hủy</button>
+                <button class="btn btn-primary" id="modalSave">Lưu</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Modal -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Xác nhận</h3>
+                <button class="modal-close" id="confirmModalClose">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmMessage"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="confirmCancel">Hủy</button>
+                <button class="btn btn-danger" id="confirmOk">Xác nhận</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Selection Modal -->
+    <div class="status-modal" id="statusModal">
+        <div class="status-modal-content">
+            <div class="status-modal-header">
+                <h3>Chọn trạng thái</h3>
+                <button class="modal-close" id="statusModalClose">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="status-modal-body">
+                <div class="status-options">
+                    <!-- Dropdown chọn trạng thái -->
+                    <div class="status-option-dropdown" id="statusDropdown">
+                        <div class="status-icon present">
+                            <i class="fas fa-check"></i>
+                        </div>
+                        <div class="status-details">
+                            <strong id="selectedStatusText">Chọn trạng thái</strong>
+                        </div>
+                        <i class="fas fa-chevron-down dropdown-arrow"></i>
+                        
+                        <!-- Dropdown menu -->
+                        <div class="dropdown-menu" id="statusDropdownMenu">
+                            <div class="dropdown-item" data-status="present">
+                                <div class="status-icon present"><i class="fas fa-check"></i></div>
+                                <span>Đủ công</span>
+                            </div>
+                            <div class="dropdown-item" data-status="halfday">
+                                <div class="status-icon halfday"><i class="fas fa-check-circle"></i></div>
+                                <span>Nửa công</span>
+                            </div>
+                            <div class="dropdown-item" data-status="absent">
+                                <div class="status-icon absent"><i class="fas fa-times"></i></div>
+                                <span>Vắng mặt</span>
+                            </div>
+                            <div class="dropdown-item" data-status="late">
+                                <div class="status-icon late"><i class="fas fa-clock"></i></div>
+                                <span>Đi muộn</span>
+                            </div>
+                            <div class="dropdown-item" data-status="leave">
+                                <div class="status-icon leave"><i class="fas fa-calendar-times"></i></div>
+                                <span>Nghỉ phép</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Phần giờ tăng ca -->
+                    <div class="overtime-section">
+                        <div class="overtime-header">
+                            <i class="fas fa-clock"></i>
+                            <strong>Giờ tăng ca</strong>
+                        </div>
+                        <div class="overtime-inputs">
+                            <div class="overtime-input-group">
+                                <label>Số giờ:</label>
+                                <input type="number" id="overtimeHours" class="form-input" min="0" max="12" step="0.5" placeholder="0">
+                            </div>
+                            <div class="overtime-input-group">
+                                <label>Hệ số:</label>
+                                <select id="overtimeMultiplier" class="form-select">
+                                    <option value="">-Chọn-</option>
+                                    <option value="1.5">x1.5</option>
+                                    <option value="2">x2</option>
+                                    <option value="3">x3</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Xóa trạng thái -->
+                    <div class="status-option clear" data-status="clear">
+                        <div class="status-icon clear">
+                            <i class="fas fa-trash"></i>
+                        </div>
+                        <div class="status-details">
+                            <strong>Xoá trạng thái</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer" style="justify-content: center;">
+                    <button class="btn btn-outline" id="statusModalCancel">Hủy</button>
+                    <button class="btn btn-primary" id="statusModalSave">Lưu</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div class="login-overlay" id="loginOverlay" style="display: none;">
+        <div class="login-modal">
+            <div class="login-header">
+                <h2><i class="fas fa-user-lock"></i> Đăng Nhập</h2>
+                <p>Vui lòng đăng nhập để tiếp tục</p>
+            </div>
+            <form class="login-form" id="loginForm">
+                <div class="form-group">
+                    <label for="loginUsername">Tên đăng nhập</label>
+                    <input type="text" id="loginUsername" class="form-input" placeholder="Nhập tên đăng nhập" required>
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Mật khẩu</label>
+                    <input type="password" id="loginPassword" class="form-input" placeholder="Nhập mật khẩu" required>
+                </div>
+                <div class="login-actions">
+                    <button type="submit" class="btn btn-primary login-btn" id="loginBtn">
+                        <span><i class="fas fa-sign-in-alt"></i> Đăng nhập</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Multi-Date Picker Modal -->
+    <div class="modal" id="multiDateModal">
+      <div class="modal-content" style="max-width: 400px;">
+        <div class="modal-header">
+          <h3>Chọn ngày chấm công</h3>
+          <button class="modal-close" id="multiDateClose"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="modal-body">
+          <div id="multiDateCalendar"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" id="clearDatesBtn">Xóa tất cả</button>
+          <button class="btn btn-primary" id="confirmDatesBtn">Xác nhận</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cache Status Indicator -->
+    <div class="cache-status hidden" id="cacheStatus">
+        <i class="fas fa-cloud"></i>
+        <span>Đã đồng bộ</span>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Include JavaScript -->
+    <?!= include('JavaScript'); ?>
+</body>
+</html>

@@ -1,0 +1,2564 @@
+<!-- JavaScript.html - Optimized Frontend -->
+<script>
+
+// ====================
+// GLOBAL STATE - Load một lần
+// ====================
+
+let globalEmployees = [];
+let globalAttendanceData = {};
+let globalDepartments = [];
+let currentUser = null;
+let sessionToken = null;
+let currentDate = new Date();
+let currentEmployee = null;
+let selectedDateForStatus = null;
+let selectedStatus = null;
+let timelineDate = new Date();
+let isSyncing = false;
+let pendingChanges = [];
+let selectedBulkDates = new Set();
+let multiDatePickerDate = new Date();
+
+// Status definitions
+const ATTENDANCE_STATUS = {
+  PRESENT: 'present',
+  ABSENT: 'absent',
+  LATE: 'late',
+  LEAVE: 'leave',
+  HALFDAY: 'halfday'
+};
+
+const STATUS_CONFIG = {
+  present: { label: 'Đủ công', icon: 'fas fa-check', color: '#4caf50', shortLabel: '✓' },
+  halfday: { label: 'Nửa công', icon: 'fas fa-check-circle', color: '#8bc34a', shortLabel: '½' },
+  absent: { label: 'Vắng mặt', icon: 'fas fa-times', color: '#f44336', shortLabel: '✕' },
+  late: { label: 'Đi muộn', icon: 'fas fa-clock', color: '#ff9800', shortLabel: '⏰' },
+  leave: { label: 'Nghỉ phép', icon: 'fas fa-calendar-times', color: '#2196f3', shortLabel: '📅' }
+};
+
+// Bulk selection state
+let bulkSelectedEmployees = new Set();
+let isBulkProcessing = false;
+
+// ====================
+// APP INITIALIZATION
+// ====================
+
+document.addEventListener('DOMContentLoaded', function() {
+  initializeApp();
+});
+
+async function initializeApp() {
+  showLoading(true);
+  
+  try {
+    setupEventListeners();
+    
+    const isAuthenticated = await checkAuthentication();
+    
+    if (isAuthenticated) {
+      await loadAllDataOnce();
+      
+      updateCurrentDate();
+      initializeCalendar();
+      setDefaultMonth();
+      updateAttendanceLegend();
+      initializeStatsFilters();
+      
+      await updateUIForRole();
+      
+      setTimeout(() => {
+        timelineDate = new Date();
+        updateTimelineMonthDisplay();
+      }, 100);
+    }
+    
+  } catch (error) {
+    console.error('Error initializing app:', error);
+    showToast('Lỗi khởi tạo ứng dụng', 'error');
+  } finally {
+    showLoading(false);
+  }
+}
+
+function initializeStatsFilters() {
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  
+  // Populate months
+  const monthSelect = document.getElementById('statsMonth');
+  monthSelect.innerHTML = '';
+  for (let m = 1; m <= 12; m++) {
+    const option = document.createElement('option');
+    option.value = m;
+    option.textContent = `Tháng ${m}`;
+    if (m === currentMonth) option.selected = true;
+    monthSelect.appendChild(option);
+  }
+  
+  // Populate year (only current year)
+  const yearSelect = document.getElementById('statsYear');
+  yearSelect.innerHTML = `<option value="${currentYear}">${currentYear}</option>`;
+}
+
+// Load ALL data một lần duy nhất
+async function loadAllDataOnce() {
+  try {
+    showLoading(true);
+    
+    const result = await callServerFunction('getAllData');
+    
+    if (!result.success) {
+      throw new Error(result.message || 'Lỗi tải dữ liệu');
+    }
+    
+    globalEmployees = result.employees || [];
+    globalAttendanceData = result.attendanceData || {};
+    globalDepartments = [...new Set(globalEmployees.map(emp => emp.department))].filter(d => d && d.trim() !== '');
+    
+    updateAllUISelectors();
+    
+  } catch (error) {
+    console.error('Error loading data:', error);
+    showToast('Lỗi tải dữ liệu: ' + error.message, 'error');
+  } finally {
+    showLoading(false);
+  }
+}
+
+function updateAllUISelectors() {
+  updateEmployeeSelect();
+  updateDepartmentSelects();
+  renderEmployeeGrid();
+}
+
+function updateEmployeeSelect() {
+  const select = document.getElementById('employeeSelect');
+  const currentValue = select.value; // Lưu giá trị đang chọn
+  
+  select.innerHTML = '<option value="">Chọn Nhân sự...</option>';
+  
+  globalEmployees.forEach(emp => {
+    const option = document.createElement('option');
+    option.value = emp.id;
+    option.textContent = `${emp.name} (${emp.department})`;
+    select.appendChild(option);
+  });
+  
+  // Khôi phục lại giá trị đã chọn
+  if (currentValue && globalEmployees.find(e => e.id === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function updateDepartmentSelects() {
+  const selects = ['departmentFilter', 'statsDepartment'];
+  
+  selects.forEach(selectId => {
+    const select = document.getElementById(selectId);
+    if (select) {
+      const firstOption = select.querySelector('option');
+      select.innerHTML = '';
+      select.appendChild(firstOption);
+      
+      globalDepartments.forEach(dept => {
+        const option = document.createElement('option');
+        option.value = dept;
+        option.textContent = dept;
+        select.appendChild(option);
+      });
+    }
+  });
+}
+
+// ====================
+// AUTHENTICATION
+// ====================
+
+async function checkAuthentication() {
+  const token = localStorage.getItem('sessionToken');
+  if (token) {
+    // Có token -> không hiện login modal, giữ loading
+    try {
+      const result = await callServerFunction('validateSession', token);
+      if (result.success) {
+        currentUser = result.user;
+        sessionToken = token;
+        showMainApp();
+        updateUIForRole();
+        return true;
+      } else {
+        localStorage.removeItem('sessionToken');
+      }
+    } catch (error) {
+      console.error('Error validating session:', error);
+      localStorage.removeItem('sessionToken');
+    }
+  }
+  
+  // Không có token hoặc token invalid -> mới hiện login modal
+  showLoginModal();
+  return false;
+}
+
+function showLoginModal() {
+  document.getElementById('loginOverlay').style.display = 'flex';
+}
+
+function showMainApp() {
+  document.getElementById('loginOverlay').style.display = 'none';
+  document.querySelector('.main-content').style.display = 'block';
+  document.querySelector('.sidebar').style.display = 'block';
+  document.querySelector('.header').style.display = 'block';
+  
+  document.getElementById('currentUser').textContent = currentUser.name;
+  document.getElementById('logoutBtn').style.display = 'flex';
+}
+
+async function updateUIForRole() {
+  if (currentUser.role === 'User') {
+    const navItems = document.querySelectorAll('.nav-item');
+    navItems.forEach(item => {
+      if (item.dataset.page !== 'attendance') {
+        item.style.display = 'none';
+      }
+    });
+    
+    navigateToPage('attendance');
+    
+    const employeeSelect = document.getElementById('employeeSelect');
+    if (employeeSelect && currentUser.userId) {
+      const userEmployee = globalEmployees.find(emp => emp.id === currentUser.userId);
+      
+      if (userEmployee) {
+        employeeSelect.value = currentUser.userId;
+        employeeSelect.disabled = true;
+        currentEmployee = userEmployee;
+        
+        showEmployeeInfo();
+        loadAttendanceDataFromCache();
+      }
+    }
+    
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('calendar-date') && currentUser.role === 'User') {
+        e.stopPropagation();
+      }
+    }, true);
+    
+  } else if (currentUser.role === 'Admin') {
+    const employeeSelect = document.getElementById('employeeSelect');
+    if (employeeSelect) {
+      employeeSelect.disabled = false;
+      
+      // Tự động chọn admin
+      if (currentUser.userId) {
+        const adminEmployee = globalEmployees.find(emp => emp.id === currentUser.userId);
+        if (adminEmployee) {
+          employeeSelect.value = currentUser.userId;
+          currentEmployee = adminEmployee;
+          showEmployeeInfo();
+          loadAttendanceDataFromCache();
+        }
+      }
+    }
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value.trim();
+  
+  if (!username || !password) {
+    showToast('Vui lòng nhập đầy đủ thông tin', 'warning');
+    return;
+  }
+  
+  const loginBtn = document.getElementById('loginBtn');
+  loginBtn.classList.add('loading');
+  loginBtn.disabled = true;
+  
+  try {
+    const result = await callServerFunction('authenticateUser', username, password);
+    
+    if (result.success) {
+      currentUser = result.user;
+      sessionToken = result.token;
+      localStorage.setItem('sessionToken', sessionToken);
+      
+      showToast('Đăng nhập thành công', 'success');
+      showMainApp();
+      
+      await loadAllDataOnce();
+      updateUIForRole();
+      
+    } else {
+      showToast(result.message, 'error');
+    }
+  } catch (error) {
+    console.error('Error logging in:', error);
+    showToast('Lỗi đăng nhập: ' + error.message, 'error');
+  } finally {
+    loginBtn.classList.remove('loading');
+    loginBtn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  if (await showConfirm('Bạn có chắc muốn đăng xuất?')) {
+    showLoading(true);
+    
+    try {
+      await syncPendingChanges();
+      
+      if (sessionToken) {
+        await callServerFunction('logoutUser', sessionToken);
+      }
+    } catch (error) {
+      console.error('Error logging out:', error);
+    }
+    
+    currentUser = null;
+    sessionToken = null;
+    currentEmployee = null;
+    localStorage.removeItem('sessionToken');
+    
+    globalEmployees = [];
+    globalAttendanceData = {};
+    globalDepartments = [];
+    pendingChanges = [];
+    
+    document.getElementById('logoutBtn').style.display = 'none';
+    document.getElementById('loginForm').reset();
+    
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.style.display = 'block';
+    });
+    
+    const employeeSelect = document.getElementById('employeeSelect');
+    employeeSelect.disabled = false;
+    employeeSelect.value = '';
+    
+    document.getElementById('employeeInfo').style.display = 'none';
+    document.getElementById('calendarBody').innerHTML = '';
+    
+    showToast('Đã đăng xuất thành công', 'success');
+    showLoginModal();
+    showLoading(false);
+  }
+}
+
+// ====================
+// EVENT LISTENERS
+// ====================
+
+function setupEventListeners() {
+  document.getElementById('menuToggle').addEventListener('click', toggleSidebar);
+  document.getElementById('navClose').addEventListener('click', closeSidebar);
+  document.getElementById('overlay').addEventListener('click', closeSidebar);
+  
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.preventDefault();
+      const page = this.dataset.page;
+      navigateToPage(page);
+    });
+  });
+  
+  document.getElementById('exportTimelineBtn').addEventListener('click', exportTimelineToExcel);
+  
+  document.getElementById('employeeSelect').addEventListener('change', onEmployeeChange);
+  document.getElementById('prevMonth').addEventListener('click', () => changeMonth(-1));
+  document.getElementById('nextMonth').addEventListener('click', () => changeMonth(1));
+  
+  document.getElementById('departmentFilter').addEventListener('change', filterTimelineByDepartment);
+  document.getElementById('timelinePrevMonth').addEventListener('click', () => changeTimelineMonth(-1));
+  document.getElementById('timelineNextMonth').addEventListener('click', () => changeTimelineMonth(1));
+  
+  document.getElementById('statsMonth').addEventListener('change', generateReport);
+  document.getElementById('statsYear').addEventListener('change', generateReport);
+  document.getElementById('statsDepartment').addEventListener('change', generateReport);
+  
+  document.getElementById('addEmployeeBtn').addEventListener('click', () => openEmployeeModal());
+  document.getElementById('employeeSearch').addEventListener('input', searchEmployees);
+  
+  document.getElementById('modalClose').addEventListener('click', closeModal);
+  document.getElementById('modalCancel').addEventListener('click', closeModal);
+  document.getElementById('modalSave').addEventListener('click', saveEmployee);
+  
+  document.getElementById('statusModalClose').addEventListener('click', closeStatusModal);
+  document.getElementById('statusModalSave').addEventListener('click', saveAttendanceStatus);
+  document.getElementById('statusModalCancel').addEventListener('click', closeStatusModal);
+  
+  document.getElementById('confirmModalClose').addEventListener('click', closeConfirmModal);
+  document.getElementById('confirmCancel').addEventListener('click', closeConfirmModal);
+  
+  document.getElementById('loginForm').addEventListener('submit', handleLogin);
+  document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+  
+  document.getElementById('selectAllBtn').addEventListener('click', selectAllEmployees);
+  document.getElementById('clearSelectionBtn').addEventListener('click', clearSelection);
+  document.getElementById('bulkSubmitBtn').addEventListener('click', submitBulkAttendance);
+
+  document.getElementById('bulkDateBtn').addEventListener('click', openMultiDatePicker);
+  document.getElementById('multiDateClose').addEventListener('click', closeMultiDatePicker);
+  document.getElementById('clearDatesBtn').addEventListener('click', clearAllDates);
+  document.getElementById('confirmDatesBtn').addEventListener('click', confirmDates);
+  
+  document.addEventListener('click', function(e) {
+    const statusOption = e.target.closest('.status-option');
+    if (statusOption) {
+      document.querySelectorAll('.status-option').forEach(opt => {
+        opt.classList.remove('selected');
+      });
+      
+      statusOption.classList.add('selected');
+      selectedStatus = statusOption.classList.contains('clear') ? 'clear' : statusOption.dataset.status;
+    }
+  });
+
+
+  
+  document.getElementById('statusDropdown').addEventListener('click', function(e) {
+    e.stopPropagation();
+    this.classList.toggle('active');
+    document.getElementById('statusDropdownMenu').classList.toggle('active');
+  });
+  
+  document.querySelectorAll('.dropdown-item').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const status = this.dataset.status;
+      const statusConfig = STATUS_CONFIG[status];
+      
+      document.getElementById('selectedStatusText').textContent = statusConfig.label;
+      document.querySelector('#statusDropdown .status-icon').className = `status-icon ${status}`;
+      document.querySelector('#statusDropdown .status-icon i').className = statusConfig.icon;
+      
+      document.getElementById('statusDropdown').classList.add('selected');
+      selectedStatus = status;
+      
+      document.getElementById('statusDropdown').classList.remove('active');
+      document.getElementById('statusDropdownMenu').classList.remove('active');
+    });
+  });
+  
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('#statusDropdown')) {
+      document.getElementById('statusDropdown').classList.remove('active');
+      document.getElementById('statusDropdownMenu').classList.remove('active');
+    }
+  });
+  
+  document.getElementById('bulkStatusDropdown').addEventListener('click', function(e) {
+    e.stopPropagation();
+    this.classList.toggle('active');
+    document.getElementById('bulkStatusDropdownMenu').classList.toggle('active');
+  });
+  
+  document.querySelectorAll('#bulkStatusDropdownMenu .dropdown-item').forEach(item => {
+    item.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const status = this.dataset.status;
+      const statusConfig = STATUS_CONFIG[status];
+      
+      document.getElementById('bulkSelectedStatusText').textContent = statusConfig.label;
+      document.querySelector('#bulkStatusDropdown .status-icon').className = `status-icon ${status}`;
+      document.querySelector('#bulkStatusDropdown .status-icon i').className = statusConfig.icon;
+      
+      document.getElementById('bulkStatusDropdown').classList.remove('active');
+      document.getElementById('bulkStatusDropdownMenu').classList.remove('active');
+    });
+  });
+
+  // Click outside to close bulk status dropdown
+  document.addEventListener('click', function(e) {
+    const dropdown = document.getElementById('bulkStatusDropdown');
+    const menu = document.getElementById('bulkStatusDropdownMenu');
+    
+    if (!dropdown.contains(e.target)) {
+      dropdown.classList.remove('active');
+      menu.classList.remove('active');
+    }
+  });
+}
+
+// ====================
+// NAVIGATION
+// ====================
+
+function navigateToPage(pageName) {
+  document.querySelectorAll('.nav-item').forEach(item => {
+    item.classList.remove('active');
+  });
+  document.querySelector(`[data-page="${pageName}"]`).classList.add('active');
+  
+  document.querySelectorAll('.page').forEach(page => {
+    page.classList.remove('active');
+  });
+  document.getElementById(`${pageName}Page`).classList.add('active');
+  
+  closeSidebar();
+  
+  switch(pageName) {
+    case 'attendance':
+      if (currentEmployee) {
+        loadAttendanceDataFromCache();
+      }
+      break;
+    case 'bulk':
+      renderEmployeeGrid();
+      break;
+    case 'overview':
+      loadTimelineData();
+      break;
+    case 'statistics':
+      generateReport();
+      break;
+    case 'employees':
+      loadEmployeeList();
+      break;
+  }
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  
+  sidebar.classList.toggle('active');
+  overlay.classList.toggle('active');
+}
+
+function closeSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  
+  sidebar.classList.remove('active');
+  overlay.classList.remove('active');
+}
+
+// ====================
+// ATTENDANCE PAGE - Client-side data processing
+// ====================
+
+function onEmployeeChange(e) {
+  const employeeId = e.target.value;
+  
+  currentEmployee = null;
+  
+  const calendarBody = document.getElementById('calendarBody');
+  
+  if (employeeId) {
+    currentEmployee = globalEmployees.find(emp => emp.id === employeeId);
+    
+    if (currentEmployee) {
+      showEmployeeInfo();
+      loadAttendanceDataFromCache();
+    }
+  } else {
+    hideEmployeeInfo();
+    clearCalendar();
+  }
+}
+
+function loadAttendanceDataFromCache() {
+  if (!currentEmployee) return;
+  
+  const month = currentDate.getMonth() + 1;
+  const year = currentDate.getFullYear();
+  
+  const employeeData = globalAttendanceData[currentEmployee.id];
+  const monthData = employeeData ? employeeData[month] : {};
+  
+  renderCalendar(monthData);
+  updateAttendanceStats(monthData);
+}
+
+function showEmployeeInfo() {
+  if (!currentEmployee) return;
+  
+  const infoElement = document.getElementById('employeeInfo');
+  const avatarElement = document.querySelector('.employee-avatar'); // TÌM ELEMENT
+  
+  // THAY ĐỔI HIỂN THỊ AVATAR
+  if (currentEmployee.avatar) {
+    const avatarUrl = convertGoogleDriveUrl(currentEmployee.avatar); // THÊM
+    avatarElement.innerHTML = `<img src="${avatarUrl}" alt="${currentEmployee.name}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.parentElement.innerHTML='<i class=\\'fas fa-user\\'></i>';">`;
+  } else {
+    avatarElement.innerHTML = '<i class="fas fa-user"></i>';
+  }
+  
+  document.getElementById('employeeName').textContent = currentEmployee.name;
+  document.getElementById('employeeDepartment').textContent = currentEmployee.department;
+  
+  infoElement.style.display = 'block';
+  infoElement.classList.add('fade-in');
+}
+
+function hideEmployeeInfo() {
+  const infoElement = document.getElementById('employeeInfo');
+  infoElement.style.display = 'none';
+  updateAttendanceLegend();
+}
+
+function initializeCalendar() {
+  renderCalendar({});
+}
+
+function renderCalendar(attendanceData) {
+  const calendarBody = document.getElementById('calendarBody');
+  calendarBody.innerHTML = '';
+  
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const daysInMonth = lastDay.getDate();
+  const startingDay = (firstDay.getDay() + 6) % 7;
+  
+  const prevMonth = new Date(year, month, 0);
+  const daysInPrevMonth = prevMonth.getDate();
+  
+  let dayCount = 1;
+  let nextMonthDay = 1;
+  
+  for (let i = 0; i < 42; i++) {
+    const dayElement = document.createElement('div');
+    dayElement.className = 'calendar-date';
+    
+    let currentDayDate;
+    let isCurrentMonth = false;
+    
+    if (i < startingDay) {
+      const day = daysInPrevMonth - startingDay + i + 1;
+      dayElement.textContent = day;
+      dayElement.classList.add('other-month');
+      currentDayDate = new Date(year, month - 1, day);
+    } else if (dayCount <= daysInMonth) {
+      currentDayDate = new Date(year, month, dayCount);
+      isCurrentMonth = true;
+      
+      const today = new Date();
+      if (year === today.getFullYear() && 
+          month === today.getMonth() && 
+          dayCount === today.getDate()) {
+        dayElement.classList.add('today');
+      }
+      
+      const dayOfWeek = currentDayDate.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        dayElement.classList.add('weekend');
+      }
+      
+      if (currentEmployee) {
+        if (!currentUser || currentUser.role === 'Admin') {
+          dayElement.addEventListener('click', () => openStatusModal(currentDayDate));
+          dayElement.style.cursor = 'pointer';
+        } else {
+          dayElement.style.cursor = 'default';
+        }
+        
+        const dateKey = formatDateKey(currentDayDate);
+        const dayData = attendanceData[dateKey];
+        
+        if (dayData && dayData.status) {
+          const statusConfig = STATUS_CONFIG[dayData.status];
+          dayElement.classList.add(dayData.status);
+          
+          const timestampText = dayData.timestamp ? ` - ${dayData.timestamp}` : '';
+          let overtimeText = '';
+          if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+            overtimeText = ` - TC: ${dayData.overtimeHours}h${dayData.overtimeMultiplier > 1 ? ' (x' + dayData.overtimeMultiplier + ')' : ''}`;
+          }
+          dayElement.title = `${currentEmployee.name} - ${dayCount}/${month + 1}/${year} - ${statusConfig.label}${timestampText}${overtimeText}`;
+          
+          const overtimeDisplay = (dayData.overtimeHours && dayData.overtimeHours > 0) 
+            ? `${dayData.overtimeHours}h${dayData.overtimeMultiplier > 1 ? '(x' + dayData.overtimeMultiplier + ')' : ''}` : '';
+          
+          dayElement.innerHTML = `
+            <div class="day-number">${dayCount}</div>
+            <div class="status-icon">
+              <i class="${statusConfig.icon}"></i>
+            </div>
+            ${overtimeDisplay ? `<div class="overtime-info">${overtimeDisplay}</div>` : ''}
+          `;
+        } else {
+          dayElement.innerHTML = `<div class="day-number">${dayCount}</div>`;
+        }
+      } else {
+        dayElement.innerHTML = `<div class="day-number">${dayCount}</div>`;
+      }
+      
+      dayCount++;
+    } else {
+      dayElement.textContent = nextMonthDay;
+      dayElement.classList.add('other-month');
+      currentDayDate = new Date(year, month + 1, nextMonthDay);
+      nextMonthDay++;
+    }
+    
+    calendarBody.appendChild(dayElement);
+    
+    if (i >= 35 && dayCount > daysInMonth) break;
+  }
+}
+
+function clearCalendar() {
+  const calendarBody = document.getElementById('calendarBody');
+  calendarBody.innerHTML = '';
+  renderCalendar({});
+}
+
+function formatDateKey(date) {
+  return String(date.getDate()).padStart(2, '0');
+}
+
+function changeMonth(direction) {
+  currentDate.setMonth(currentDate.getMonth() + direction);
+  updateCurrentMonthDisplay();
+  
+  if (currentEmployee) {
+    loadAttendanceDataFromCache();
+  } else {
+    updateAttendanceLegend();
+  }
+}
+
+function updateCurrentMonthDisplay() {
+  const monthElement = document.getElementById('currentMonth');
+  const options = { month: 'long', year: 'numeric' };
+  monthElement.textContent = currentDate.toLocaleDateString('vi-VN', options);
+}
+
+function setDefaultMonth() {
+  updateCurrentMonthDisplay();
+}
+
+function updateAttendanceStats(attendanceData) {
+  if (!currentEmployee) return;
+  
+  const presentDaysElement = document.getElementById('presentDays');
+  const attendanceRateElement = document.getElementById('attendanceRate');
+  
+  const counts = calculateStatusCounts(attendanceData);
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  const totalWorked = counts.present + (counts.halfday * 0.5) + counts.late;
+  
+  // Tính tổng giờ tăng ca
+  let totalOvertimeHours = 0;
+  Object.values(attendanceData).forEach(dayData => {
+    if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+      totalOvertimeHours += dayData.overtimeHours * (dayData.overtimeMultiplier || 1);
+    }
+  });
+  
+  presentDaysElement.innerHTML = `
+    <div class="stat">
+      <i class="fas fa-calendar-day"></i>
+      Ngày công: ${totalWorked.toFixed(1)}/${daysInMonth} ngày
+    </div>
+    <div class="stat">
+      <i class="fas fa-clock"></i>
+      Giờ tăng ca: ${totalOvertimeHours}h
+    </div>
+  `;
+  
+  const attendanceRate = daysInMonth > 0 ? Math.round((totalWorked / daysInMonth) * 100) : 0;
+  attendanceRateElement.textContent = `${attendanceRate}%`;
+  
+  updateAttendanceLegend(counts);
+}
+
+function calculateStatusCounts(attendanceData) {
+  if (!currentEmployee || !attendanceData) {
+    return { present: 0, halfday: 0, absent: 0, late: 0, leave: 0 };
+  }
+  
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  let present = 0, halfday = 0, absent = 0, late = 0, leave = 0;
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateKey = String(day).padStart(2, '0');
+    const dayData = attendanceData[dateKey];
+    
+    if (dayData && dayData.status) {
+      switch (dayData.status) {
+        case ATTENDANCE_STATUS.PRESENT:
+          present++;
+          break;
+        case 'halfday':
+          halfday++;
+          break;
+        case ATTENDANCE_STATUS.ABSENT:
+          absent++;
+          break;
+        case ATTENDANCE_STATUS.LATE:
+          late++;
+          break;
+        case ATTENDANCE_STATUS.LEAVE:
+          leave++;
+          break;
+      }
+    }
+  }
+  
+  return { present, halfday, absent, late, leave };
+}
+
+function updateAttendanceLegend(counts) {
+  if (!counts) {
+    counts = { present: 0, halfday: 0, absent: 0, late: 0, leave: 0 };
+  }
+  
+  const attendancePage = document.getElementById('attendancePage');
+  const legendItems = attendancePage.querySelectorAll('.legend-item span');
+  
+  if (legendItems.length >= 5) {
+    legendItems[0].textContent = `Đủ công (${counts.present || 0})`;
+    legendItems[1].textContent = `Nửa công (${counts.halfday || 0})`;
+    legendItems[2].textContent = `Vắng mặt (${counts.absent || 0})`;
+    legendItems[3].textContent = `Đi muộn (${counts.late || 0})`;
+    legendItems[4].textContent = `Nghỉ phép (${counts.leave || 0})`;
+  }
+}
+
+// ====================
+// STATUS MODAL & UPDATES
+// ====================
+
+function openStatusModal(date) {
+  if (!currentEmployee) return;
+  
+  if (currentUser && currentUser.role === 'User') {
+    return;
+  }
+  
+  selectedDateForStatus = date;
+  const dateKey = formatDateKey(date);
+  
+  const modalTitle = document.querySelector('#statusModal .status-modal-header h3');
+  const day = date.getDate();
+  const month = date.getMonth() + 1;
+  const year = date.getFullYear();
+  const dateStr = `${day}/${month}/${year}`;
+  modalTitle.textContent = `Theo dõi tăng ca ${currentEmployee.name} - ${dateStr}`;
+  
+  // Reset trước
+  document.querySelectorAll('.status-option').forEach(option => {
+    option.classList.remove('selected');
+  });
+  document.getElementById('statusDropdown').classList.remove('active', 'selected');
+  document.getElementById('statusDropdownMenu').classList.remove('active');
+  document.getElementById('selectedStatusText').textContent = 'Chọn trạng thái';
+  document.querySelector('#statusDropdown .status-icon').className = 'status-icon present';
+  document.querySelector('#statusDropdown .status-icon i').className = 'fas fa-check';
+  document.getElementById('overtimeHours').value = '';
+  document.getElementById('overtimeMultiplier').value = '';
+  selectedStatus = null;
+  
+  // Load dữ liệu đã chấm (nếu có)
+  const monthData = globalAttendanceData[currentEmployee.id]?.[month] || {};
+  const dayData = monthData[dateKey];
+  
+  if (dayData && dayData.status) {
+    // Pre-select status
+    const statusConfig = STATUS_CONFIG[dayData.status];
+    document.getElementById('selectedStatusText').textContent = statusConfig.label;
+    document.querySelector('#statusDropdown .status-icon').className = `status-icon ${dayData.status}`;
+    document.querySelector('#statusDropdown .status-icon i').className = statusConfig.icon;
+    document.getElementById('statusDropdown').classList.add('selected');
+    selectedStatus = dayData.status;
+    
+    // Pre-fill overtime
+    if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+      document.getElementById('overtimeHours').value = dayData.overtimeHours;
+      document.getElementById('overtimeMultiplier').value = (dayData.overtimeMultiplier && dayData.overtimeMultiplier > 1) ? dayData.overtimeMultiplier : '';
+    }
+  }
+  
+  const modal = document.getElementById('statusModal');
+  modal.classList.add('active');
+}
+
+function closeStatusModal() {
+  const modal = document.getElementById('statusModal');
+  const isFromTimeline = modal.dataset.isFromTimeline === 'true';
+  const tempEmployeeId = modal.dataset.tempCurrentEmployee;
+  
+  modal.classList.remove('active');
+  selectedDateForStatus = null;
+  
+  const modalTitle = document.querySelector('#statusModal .status-modal-header h3');
+  modalTitle.textContent = 'Chọn trạng thái';
+  
+  document.querySelectorAll('.status-option').forEach(option => {
+    option.classList.remove('selected');
+  });
+  
+  if (isFromTimeline) {
+    if (tempEmployeeId) {
+      currentEmployee = globalEmployees.find(emp => emp.id === tempEmployeeId);
+    } else {
+      currentEmployee = null;
+    }
+    modal.dataset.isFromTimeline = 'false';
+    modal.dataset.tempCurrentEmployee = '';
+  }
+  
+  document.getElementById('statusDropdown').classList.remove('active', 'selected');
+  document.getElementById('statusDropdownMenu').classList.remove('active');
+  document.getElementById('selectedStatusText').textContent = 'Chọn trạng thái';
+  document.querySelector('#statusDropdown .status-icon').className = 'status-icon present';
+  
+  document.getElementById('overtimeHours').value = '';
+  document.getElementById('overtimeMultiplier').value = '';
+  
+  selectedStatus = null;
+}
+
+async function saveAttendanceStatus() {
+  if (!selectedStatus) {
+    showToast('Vui lòng chọn trạng thái', 'warning');
+    return;
+  }
+  
+  if (selectedStatus === 'clear') {
+    await clearAttendanceStatus();
+  } else {
+    const statusData = {
+      status: selectedStatus
+    };
+    
+    const overtimeHours = parseFloat(document.getElementById('overtimeHours').value);
+    const overtimeMultiplier = document.getElementById('overtimeMultiplier').value;
+    
+    if (overtimeHours && overtimeHours > 0) {
+      statusData.overtimeHours = overtimeHours;
+      if (overtimeMultiplier) {  // Chỉ lưu multiplier nếu đã chọn
+        statusData.overtimeMultiplier = parseFloat(overtimeMultiplier);
+      }
+    }
+    
+    await selectStatus(selectedStatus, statusData);
+  }
+  
+  selectedStatus = null;
+}
+
+async function selectStatus(status, additionalData) {
+  if (!selectedDateForStatus || !currentEmployee) {
+    showToast('Lỗi: Thiếu thông tin ngày hoặc nhân viên', 'error');
+    return;
+  }
+  
+  const statusData = {
+    status: status,
+    ...additionalData
+  };
+  
+  await processAttendanceUpdate('status', statusData);
+}
+
+async function clearAttendanceStatus() {
+  if (!selectedDateForStatus || !currentEmployee) {
+    showToast('Lỗi: Thiếu thông tin ngày hoặc nhân viên', 'error');
+    return;
+  }
+  
+  await processAttendanceUpdate('clear');
+}
+
+// OPTIMISTIC UI UPDATE với fake 1.5s delay
+async function processAttendanceUpdate(type, statusData = null) {
+  const targetDate = new Date(selectedDateForStatus);
+  const targetEmployee = currentEmployee;
+  const dateKey = formatDateKey(targetDate);
+  const month = targetDate.getMonth() + 1;
+  const year = targetDate.getFullYear();
+  
+  closeStatusModal();
+  
+  const now = new Date();
+  const timestamp = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  
+  // BƯỚC 1: Update UI ngay lập tức (Optimistic)
+  if (!globalAttendanceData[targetEmployee.id]) {
+    globalAttendanceData[targetEmployee.id] = {};
+  }
+  if (!globalAttendanceData[targetEmployee.id][month]) {
+    globalAttendanceData[targetEmployee.id][month] = {};
+  }
+  
+  const currentData = globalAttendanceData[targetEmployee.id][month];
+  
+  if (type === 'clear') {
+    delete currentData[dateKey];
+    showToast('Đã xóa dữ liệu Theo dõi tăng ca', 'success');
+  } else if (type === 'status') {
+    const dayData = {
+      status: statusData.status,
+      timestamp: timestamp
+    };
+    
+    if (statusData.overtimeHours && statusData.overtimeHours > 0) {
+      dayData.overtimeHours = parseFloat(statusData.overtimeHours);
+      dayData.overtimeMultiplier = parseFloat(statusData.overtimeMultiplier || 1);
+    }
+    
+    currentData[dateKey] = dayData;
+    
+    const statusLabel = STATUS_CONFIG[statusData.status].label;
+    let message = `Đã Theo dõi tăng ca: ${statusLabel}`;
+    if (dayData.overtimeHours) {
+      message += ` (TC: ${dayData.overtimeHours}h x${dayData.overtimeMultiplier})`;
+    }
+    showToast(message, 'success');
+  }
+  
+  // Update UI
+  const attendancePage = document.getElementById('attendancePage');
+  if (attendancePage && attendancePage.classList.contains('active') && 
+      targetEmployee.id === (document.getElementById('employeeSelect')?.value)) {
+    loadAttendanceDataFromCache();
+  }
+  
+  const timelinePage = document.getElementById('overviewPage');
+  if (timelinePage && timelinePage.classList.contains('active')) {
+    loadTimelineData();
+  }
+  
+  // BƯỚC 2: Fake delay 1.5s rồi mới sync server
+  setTimeout(async () => {
+    try {
+      const result = await callServerFunction(
+        'saveAttendanceData',
+        targetEmployee.id,
+        month,
+        year,
+        currentData
+      );
+      
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+      
+    } catch (error) {
+      console.error('Error syncing to server:', error);
+      showToast('Lỗi đồng bộ: ' + error.message, 'error');
+    }
+  }, 1500);
+}
+
+// ====================
+// BULK ATTENDANCE
+// ====================
+
+function renderEmployeeGrid() {
+  const grid = document.getElementById('employeeGrid');
+  grid.innerHTML = '';
+  
+  const groupedByDept = {};
+  globalEmployees.forEach(employee => {
+    const dept = employee.department || 'Không xác định';
+    if (!groupedByDept[dept]) {
+      groupedByDept[dept] = [];
+    }
+    groupedByDept[dept].push(employee);
+  });
+  
+  const sortedDepartments = Object.keys(groupedByDept).sort();
+  
+  sortedDepartments.forEach(dept => {
+    const departmentEmployees = groupedByDept[dept];
+    
+    const deptGroup = document.createElement('div');
+    deptGroup.className = 'department-group';
+    
+    const deptHeader = document.createElement('div');
+    deptHeader.className = 'department-group-header';
+    deptHeader.innerHTML = `
+      <div class="department-name">
+        <i class="fas fa-building"></i>
+        <h4>${dept}</h4>
+      </div>
+      <span class="employee-count">${departmentEmployees.length} nhân viên</span>
+    `;
+    
+    const deptEmployeeGrid = document.createElement('div');
+    deptEmployeeGrid.className = 'department-employee-grid';
+    
+    departmentEmployees.forEach(employee => {
+      const initials = employee.name.split(' ').map(n => n[0]).join('').toUpperCase();
+      
+      const card = document.createElement('div');
+      card.className = 'employee-card-selectable';
+      card.dataset.employeeId = employee.id;
+      card.onclick = () => toggleEmployeeSelection(employee.id);
+      
+      // SỬA LẠI LOGIC AVATAR - chỉ hiện chữ khi không có ảnh HOẶC ảnh lỗi
+      let avatarHtml;
+      if (employee.avatar) {
+        const avatarUrl = convertGoogleDriveUrl(employee.avatar); // THÊM
+        avatarHtml = `<img src="${avatarUrl}" alt="${employee.name}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.onerror=null;this.parentElement.textContent='${initials}';">`;
+      } else {
+        avatarHtml = initials;
+      }
+      
+      card.innerHTML = `
+        <div class="employee-card-info">
+          <div class="employee-avatar-grid">${avatarHtml}</div>
+          <div class="employee-details-grid">
+            <h4>${employee.name}</h4>
+            <p>${employee.code || employee.id}</p>
+          </div>
+        </div>
+      `;
+      
+      deptEmployeeGrid.appendChild(card);
+    });
+    
+    deptGroup.appendChild(deptHeader);
+    deptGroup.appendChild(deptEmployeeGrid);
+    grid.appendChild(deptGroup);
+  });
+  
+  updateBulkSelectionUI();
+}
+
+function toggleEmployeeSelection(employeeId) {
+  if (bulkSelectedEmployees.has(employeeId)) {
+    bulkSelectedEmployees.delete(employeeId);
+  } else {
+    bulkSelectedEmployees.add(employeeId);
+  }
+  updateBulkSelectionUI();
+}
+
+function selectAllEmployees() {
+  globalEmployees.forEach(emp => {
+    bulkSelectedEmployees.add(emp.id);
+  });
+  updateBulkSelectionUI();
+}
+
+function clearSelection() {
+  bulkSelectedEmployees.clear();
+  updateBulkSelectionUI();
+}
+
+function updateBulkSelectionUI() {
+  const count = bulkSelectedEmployees.size;
+  const hasSelection = count > 0;
+  document.getElementById('bulkSubmitBtn').disabled = !hasSelection;
+  
+  updateBulkSelectionInfo();
+  
+  document.querySelectorAll('.employee-card-selectable').forEach(card => {
+    const employeeId = card.dataset.employeeId;
+    if (bulkSelectedEmployees.has(employeeId)) {
+      card.classList.add('selected');
+    } else {
+      card.classList.remove('selected');
+    }
+  });
+}
+
+function updateBulkSelectionInfo() {
+  const employeeCount = bulkSelectedEmployees.size;
+  const dateCount = selectedBulkDates.size;
+  const selectionInfo = document.getElementById('selectionInfo');
+  
+  if (employeeCount === 0 && dateCount === 0) {
+    selectionInfo.className = 'selection-info';
+    selectionInfo.innerHTML = `
+      <i class="fas fa-info-circle"></i>
+      <span>Chọn nhân viên và ngày để Theo dõi tăng ca hàng loạt</span>
+    `;
+  } else {
+    selectionInfo.className = 'selection-info has-selection';
+    
+    let content = '<i class="fas fa-check-circle"></i>';
+    
+    if (employeeCount > 0) {
+      content += `<div class="selection-left">
+        <span class="selection-badge employee-badge">
+          <i class="fas fa-users"></i> ${employeeCount} nhân viên
+        </span>
+      </div>`;
+    }
+    
+    if (dateCount > 0) {
+      const dates = Array.from(selectedBulkDates).sort();
+      const dateLabels = dates.map(d => {
+        const date = new Date(d);
+        return `${date.getDate()}/${date.getMonth() + 1}`;
+      }).join(', ');
+      
+      content += `<div class="selection-right">
+        <span class="selection-badge date-badge">
+          <i class="fas fa-calendar-alt"></i> ${dateCount} ngày: ${dateLabels}
+        </span>
+      </div>`;
+    }
+    
+    selectionInfo.innerHTML = content;
+  }
+}
+
+function renderMultiDateCalendar() {
+  const calendar = document.getElementById('multiDateCalendar');
+  const now = multiDatePickerDate; // Sử dụng biến state thay vì new Date()
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  
+  // Lấy ngày hôm nay thực tế để highlight
+  const today = new Date();
+  const todayDate = today.getDate();
+  const todayMonth = today.getMonth();
+  const todayYear = today.getFullYear();
+  
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const daysInMonth = lastDay.getDate();
+  const startingDay = (firstDay.getDay() + 6) % 7;
+  
+  let html = `
+    <div class="multi-date-header">
+      <button class="btn btn-outline" onclick="changeMultiDateMonth(-1)" style="padding: 4px 8px;">
+        <i class="fas fa-chevron-left"></i>
+      </button>
+      <h4>${now.toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' })}</h4>
+      <button class="btn btn-outline" onclick="changeMultiDateMonth(1)" style="padding: 4px 8px;">
+        <i class="fas fa-chevron-right"></i>
+      </button>
+    </div>
+    <div class="multi-date-grid">
+      <!-- Header row -->
+      <div class="multi-date-day-header">T2</div>
+      <div class="multi-date-day-header">T3</div>
+      <div class="multi-date-day-header">T4</div>
+      <div class="multi-date-day-header">T5</div>
+      <div class="multi-date-day-header">T6</div>
+      <div class="multi-date-day-header">T7</div>
+      <div class="multi-date-day-header weekend">CN</div>
+  `;
+  
+  // Empty cells
+  for (let i = 0; i < startingDay; i++) {
+    html += '<div class="multi-date-cell empty"></div>';
+  }
+  
+  // Days
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const isSelected = selectedBulkDates.has(dateStr);
+    const isToday = day === todayDate && month === todayMonth && year === todayYear;
+    
+    html += `
+      <div class="multi-date-cell ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}" data-date="${dateStr}">
+        ${day}
+      </div>
+    `;
+  }
+  
+  html += '</div>';
+  calendar.innerHTML = html;
+  
+  // Add click handlers
+  calendar.querySelectorAll('.multi-date-cell:not(.empty)').forEach(cell => {
+    cell.addEventListener('click', () => toggleDateSelection(cell.dataset.date));
+  });
+}
+
+function toggleDateSelection(dateStr) {
+  if (selectedBulkDates.has(dateStr)) {
+    selectedBulkDates.delete(dateStr);
+  } else {
+    selectedBulkDates.add(dateStr);
+  }
+  renderMultiDateCalendar();
+}
+
+function clearAllDates() {
+  selectedBulkDates.clear();
+  renderMultiDateCalendar();
+}
+
+function confirmDates() {
+  updateSelectedDatesDisplay();
+  closeMultiDatePicker();
+}
+
+function updateSelectedDatesDisplay() {
+  const btn = document.getElementById('bulkDateBtn');
+  const selectionInfo = document.getElementById('selectionInfo');
+  
+  if (selectedBulkDates.size === 0) {
+    btn.innerHTML = '<i class="fas fa-calendar-alt"></i> Chọn ngày...';
+  } else {
+    const dates = Array.from(selectedBulkDates).sort();
+    btn.innerHTML = `<i class="fas fa-calendar-check"></i> Đã chọn ${dates.length} ngày`;
+  }
+  
+  // Update selection info với cả employee và dates
+  updateBulkSelectionInfo();
+}
+
+function openMultiDatePicker() {
+  multiDatePickerDate = new Date(); // RESET về tháng hiện tại
+  const modal = document.getElementById('multiDateModal');
+  modal.classList.add('active');
+  renderMultiDateCalendar();
+}
+
+function closeMultiDatePicker() {
+  document.getElementById('multiDateModal').classList.remove('active');
+}
+
+async function submitBulkAttendance() {
+  if (isBulkProcessing || bulkSelectedEmployees.size === 0) return;
+  
+  // Thay đổi: Kiểm tra selectedBulkDates thay vì bulkDate
+  if (selectedBulkDates.size === 0) {
+    showToast('Vui lòng chọn ngày Theo dõi tăng ca', 'warning');
+    return;
+  }
+  
+  const status = document.querySelector('#bulkStatusDropdown .status-icon').classList[1];
+  if (!status) {
+    showToast('Vui lòng chọn trạng thái', 'warning');
+    return;
+  }
+  
+  const overtimeHours = document.getElementById('bulkOvertimeHours').value;
+  const overtimeMultiplier = document.getElementById('bulkOvertimeMultiplier').value;
+  
+  const statusLabel = STATUS_CONFIG[status].label;
+  const datesArray = Array.from(selectedBulkDates);
+  
+  let confirmMessage = `Bạn có chắc muốn Theo dõi tăng ca "${statusLabel}" cho ${bulkSelectedEmployees.size} nhân viên vào ${datesArray.length} ngày đã chọn?`;
+  if (overtimeHours && overtimeHours > 0) {
+    confirmMessage += `\nBao gồm: ${overtimeHours}h tăng ca (x${overtimeMultiplier})`;
+  }
+  
+  const confirmed = await showConfirm(confirmMessage);
+  if (!confirmed) return;
+  
+  isBulkProcessing = true;
+  showBulkProgress(true);
+  
+  const selectedArray = Array.from(bulkSelectedEmployees);
+  
+  try {
+    const now = new Date();
+    const timestamp = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    
+    updateBulkProgress(1, 4);
+    
+    const bulkUpdates = [];
+    
+    // Lặp qua từng ngày đã chọn
+    datesArray.forEach(dateStr => {
+      const selectedDate = new Date(dateStr);
+      const month = selectedDate.getMonth() + 1;
+      const year = selectedDate.getFullYear();
+      const dateKey = String(selectedDate.getDate()).padStart(2, '0');
+      
+      selectedArray.forEach(employeeId => {
+        if (!globalAttendanceData[employeeId]) {
+          globalAttendanceData[employeeId] = {};
+        }
+        if (!globalAttendanceData[employeeId][month]) {
+          globalAttendanceData[employeeId][month] = {};
+        }
+        
+        const currentData = globalAttendanceData[employeeId][month];
+        
+        const dayData = {
+          status: status,
+          timestamp: timestamp
+        };
+        
+        if (overtimeHours && overtimeHours > 0) {
+          dayData.overtimeHours = parseFloat(overtimeHours);
+          if (overtimeMultiplier) {
+            dayData.overtimeMultiplier = parseFloat(overtimeMultiplier);
+          }
+        }
+        
+        currentData[dateKey] = dayData;
+        
+        bulkUpdates.push({
+          employeeId: employeeId,
+          month: month,
+          year: year,
+          attendanceData: currentData
+        });
+      });
+    });
+    
+    updateBulkProgress(2, 4);
+    
+    // Update UI
+    const attendancePage = document.getElementById('attendancePage');
+    if (attendancePage && attendancePage.classList.contains('active')) {
+      const currentEmployeeId = document.getElementById('employeeSelect')?.value;
+      if (currentEmployeeId && bulkSelectedEmployees.has(currentEmployeeId)) {
+        loadAttendanceDataFromCache();
+      }
+    }
+    
+    const timelinePage = document.getElementById('overviewPage');
+    if (timelinePage && timelinePage.classList.contains('active')) {
+      loadTimelineData();
+    }
+    
+    let message = `Đã Theo dõi tăng ca "${statusLabel}" cho ${selectedArray.length} nhân viên x ${datesArray.length} ngày`;
+    if (overtimeHours && overtimeHours > 0) {
+      message += ` (TC: ${overtimeHours}h x${overtimeMultiplier})`;
+    }
+    showToast(message, 'success');
+    
+    updateBulkProgress(3, 4);
+    
+    // Sync server sau 1.5s
+    setTimeout(async () => {
+      try {
+        const result = await callServerFunction('saveBulkAttendanceData', bulkUpdates);
+        
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+        
+        updateBulkProgress(4, 4);
+        
+        clearSelection();
+        selectedBulkDates.clear();
+        updateSelectedDatesDisplay();
+        
+        document.getElementById('bulkOvertimeHours').value = '';
+        document.getElementById('bulkOvertimeMultiplier').value = '';
+        
+      } catch (error) {
+        console.error('Bulk sync error:', error);
+        showToast('Lỗi đồng bộ: ' + error.message, 'error');
+      } finally {
+        isBulkProcessing = false;
+        showBulkProgress(false);
+      }
+    }, 1500);
+    
+  } catch (error) {
+    console.error('Bulk operation error:', error);
+    showToast('Lỗi xử lý hàng loạt: ' + error.message, 'error');
+    isBulkProcessing = false;
+    showBulkProgress(false);
+  }
+}
+
+function showBulkProgress(show) {
+  const progressEl = document.getElementById('batchProgress');
+  if (show) {
+    progressEl.classList.add('active');
+  } else {
+    progressEl.classList.remove('active');
+  }
+}
+
+function updateBulkProgress(current, total) {
+  const percent = Math.round((current / total) * 100);
+  document.getElementById('progressFill').style.width = `${percent}%`;
+  document.getElementById('progressPercent').textContent = `${percent}%`;
+}
+
+// ====================
+// TIMELINE PAGE
+// ====================
+
+function loadTimelineData() {
+  const month = timelineDate.getMonth() + 1;
+  const year = timelineDate.getFullYear();
+  
+  updateTimelineMonthDisplay();
+  renderTimeline(month, year);
+}
+
+function renderTimeline(month, year) {
+  const container = document.getElementById('timelineContainer');
+  const daysInMonth = new Date(year, month, 0).getDate();
+  
+  const departmentFilter = document.getElementById('departmentFilter').value;
+  const filteredData = departmentFilter ? 
+    globalEmployees.filter(emp => emp.department === departmentFilter) : 
+    globalEmployees;
+  
+  const groupedByDept = {};
+  filteredData.forEach(emp => {
+    if (!groupedByDept[emp.department]) {
+      groupedByDept[emp.department] = [];
+    }
+    groupedByDept[emp.department].push(emp);
+  });
+  
+  let html = `
+    <div class="timeline-wrapper" style="--days-in-month: ${daysInMonth};">
+      <div class="timeline-header" style="grid-template-columns: 200px repeat(${daysInMonth}, 30px) repeat(5, 50px);">
+        <div class="header-cell">Nhân sự</div>
+  `;
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isToday = date.toDateString() === new Date().toDateString();
+    
+    html += `<div class="header-cell ${isWeekend ? 'weekend' : ''} ${isToday ? 'today' : ''}">${day}</div>`;
+  }
+  
+  html += `
+    <div class="header-cell total-col">Công</div>
+    <div class="header-cell total-col">VM</div>
+    <div class="header-cell total-col">DM</div>
+    <div class="header-cell total-col">NP</div>
+    <div class="header-cell total-col">Giờ TC</div>
+  </div>`;
+  
+  html += `<div class="timeline-header timeline-days" style="grid-template-columns: 200px repeat(${daysInMonth}, 30px) repeat(5, 50px);">`;
+  html += '<div class="header-cell"></div>';
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isToday = date.toDateString() === new Date().toDateString();
+    
+    const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+    const dayText = dayNames[dayOfWeek];
+    
+    html += `<div class="header-cell day-name ${isWeekend ? 'weekend' : ''} ${isToday ? 'today' : ''}">${dayText}</div>`;
+  }
+
+  html += `
+    <div class="header-cell"></div>
+    <div class="header-cell"></div>
+    <div class="header-cell"></div>
+    <div class="header-cell"></div>
+    <div class="header-cell"></div>
+  </div><div class="timeline-body">`;
+  
+  Object.keys(groupedByDept).forEach(dept => {
+    html += `
+      <div class="timeline-row department-header" style="grid-template-columns: 200px repeat(${daysInMonth}, 30px) repeat(5, 50px);">
+        <div class="dept-name">${dept}</div>
+        ${Array(daysInMonth).fill('<div></div>').join('')}
+        <div></div><div></div><div></div><div></div><div></div>
+      </div>
+    `;
+    
+    groupedByDept[dept].forEach(employee => {
+      const initials = employee.name.split(' ').map(n => n[0]).join('').toUpperCase();
+      
+      // THÊM LOGIC AVATAR
+      const avatarContent = employee.avatar
+        ? `<img src="${convertGoogleDriveUrl(employee.avatar)}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.parentElement.innerHTML='<div style=\\'background:linear-gradient(135deg, var(--primary-color), var(--primary-light));border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:0.5rem;font-weight:600;\\'>${initials}</div>';">`
+        : initials;
+      
+      html += `
+        <div class="timeline-row" style="grid-template-columns: 200px repeat(${daysInMonth}, 30px) repeat(5, 50px);">
+          <div class="employee-cell">
+            <div class="employee-avatar-sm">${avatarContent}</div>
+            <div class="employee-info-sm">
+              <div class="name">${employee.name} (${employee.code})</div>
+            </div>
+          </div>
+      `;
+      
+      let presentCount = 0, absentCount = 0, lateCount = 0, leaveCount = 0, totalOvertimeHours = 0;
+      
+      const employeeData = globalAttendanceData[employee.id];
+      const monthData = employeeData ? employeeData[month] : {};
+      
+      for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month - 1, day);
+        const dayOfWeek = date.getDay();
+        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+        const isToday = date.toDateString() === new Date().toDateString();
+        const dateKey = String(day).padStart(2, '0');
+        
+        let cellClass = 'day-cell';
+        let cellContent = '';
+        
+        const dayData = monthData[dateKey];
+        if (dayData && dayData.status) {
+          const statusConfig = STATUS_CONFIG[dayData.status];
+          cellClass += ` ${dayData.status}`;
+          cellContent = statusConfig.shortLabel;
+          
+          if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+            cellContent += `<div class="overtime-badge">${dayData.overtimeHours}h${dayData.overtimeMultiplier > 1 ? '(x' + dayData.overtimeMultiplier + ')' : ''}</div>`;
+            totalOvertimeHours += dayData.overtimeHours * dayData.overtimeMultiplier;
+          }
+          
+          switch (dayData.status) {
+            case ATTENDANCE_STATUS.PRESENT:
+              presentCount++;
+              break;
+            case 'halfday':
+              presentCount += 0.5;
+              break;
+            case ATTENDANCE_STATUS.ABSENT:
+              absentCount++;
+              break;
+            case ATTENDANCE_STATUS.LATE:
+              lateCount++;
+              break;
+            case ATTENDANCE_STATUS.LEAVE:
+              leaveCount++;
+              break;
+          }
+        } else if (isWeekend) {
+          cellClass += ' weekend';
+          cellContent = '◦';
+        } else {
+          cellContent = '◦';
+        }
+        
+        if (isToday) {
+          cellClass += ' today';
+        }
+        
+        const timestampText = dayData?.timestamp ? ` - ${dayData.timestamp}` : '';
+        const statusLabel = dayData?.status ? STATUS_CONFIG[dayData.status].label : '';
+        let overtimeText = '';
+        if (dayData?.overtimeHours && dayData.overtimeHours > 0) {
+          overtimeText = ` - TC: ${dayData.overtimeHours}h${dayData.overtimeMultiplier > 1 ? ' (x' + dayData.overtimeMultiplier + ')' : ''}`;
+        }
+        
+        html += `<div class="${cellClass}" onclick="toggleTimelineAttendance('${employee.id}', '${dateKey}', ${day})" title="${employee.name} - ${day}/${month}/${year} - ${statusLabel}${timestampText}${overtimeText}">${cellContent}</div>`;
+      }
+      
+      html += `
+        <div class="total-cell present">${presentCount}</div>
+        <div class="total-cell absent">${absentCount}</div>
+        <div class="total-cell late">${lateCount}</div>
+        <div class="total-cell leave">${leaveCount}</div>
+        <div class="total-cell overtime">${totalOvertimeHours}</div>
+      `;
+      
+      html += '</div>';
+    });
+  });
+  
+html += '</div></div>';
+
+container.innerHTML = html;
+
+// Xóa legend cũ (nếu có)
+const oldLegend = document.querySelector('.timeline-legend');
+if (oldLegend) {
+  oldLegend.remove();
+}
+
+// Tạo legend riêng bên ngoài
+const counts = calculateTimelineStatusCounts(month, year, departmentFilter);
+
+
+const legendHtml = `
+  <div class="timeline-legend">
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color present"></div>
+      <span>Đủ công (${counts.present || 0})</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color halfday"></div>
+      <span>Nửa công (${counts.halfday || 0})</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color absent"></div>
+      <span>Vắng mặt (${counts.absent || 0})</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color late"></div>
+      <span>Đi muộn (${counts.late || 0})</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color leave"></div>
+      <span>Nghỉ phép (${counts.leave || 0})</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color weekend"></div>
+      <span>Cuối tuần</span>
+    </div>
+    <div class="timeline-legend-item">
+      <div class="timeline-legend-color today"></div>
+      <span>Hôm nay</span>
+    </div>
+  </div>
+`;
+
+// Thêm legend vào sau container
+container.insertAdjacentHTML('afterend', legendHtml);
+}
+
+function calculateTimelineStatusCounts(month, year, departmentFilter) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let present = 0, halfday = 0, absent = 0, late = 0, leave = 0;
+  
+  const filteredEmployees = departmentFilter ? 
+    globalEmployees.filter(emp => emp.department === departmentFilter) : 
+    globalEmployees;
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateKey = String(day).padStart(2, '0');
+    filteredEmployees.forEach(employee => {
+      const employeeData = globalAttendanceData[employee.id];
+      const monthData = employeeData ? employeeData[month] : {};
+      const dayData = monthData[dateKey];
+      
+      if (dayData && dayData.status) {
+        switch (dayData.status) {
+          case ATTENDANCE_STATUS.PRESENT:
+            present++;
+            break;
+          case 'halfday':
+            halfday++;
+            break;
+          case ATTENDANCE_STATUS.ABSENT:
+            absent++;
+            break;
+          case ATTENDANCE_STATUS.LATE:
+            late++;
+            break;
+          case ATTENDANCE_STATUS.LEAVE:
+            leave++;
+            break;
+        }
+      }
+    });
+  }
+  
+  return { present, halfday, absent, late, leave };
+}
+
+function toggleTimelineAttendance(employeeId, dateKey, day) {
+  const date = new Date(timelineDate.getFullYear(), timelineDate.getMonth(), day);
+  
+  const tempCurrentEmployee = currentEmployee;
+  const targetEmployee = globalEmployees.find(emp => emp.id === employeeId);
+  currentEmployee = targetEmployee;
+  selectedDateForStatus = date;
+  
+  const month = timelineDate.getMonth() + 1;
+  const year = timelineDate.getFullYear();
+  
+  const modalTitle = document.querySelector('#statusModal .status-modal-header h3');
+  const dateStr = `${day}/${month}/${year}`;
+  modalTitle.textContent = `Theo dõi tăng ca ${targetEmployee.name} - ${dateStr}`;
+  
+  // Reset trước
+  document.querySelectorAll('.status-option').forEach(option => {
+    option.classList.remove('selected');
+  });
+  document.getElementById('statusDropdown').classList.remove('active', 'selected');
+  document.getElementById('statusDropdownMenu').classList.remove('active');
+  document.getElementById('selectedStatusText').textContent = 'Chọn trạng thái';
+  document.querySelector('#statusDropdown .status-icon').className = 'status-icon present';
+  document.querySelector('#statusDropdown .status-icon i').className = 'fas fa-check';
+  document.getElementById('overtimeHours').value = '';
+  document.getElementById('overtimeMultiplier').value = '';
+  selectedStatus = null;
+  
+  // Load dữ liệu đã chấm (nếu có)
+  const monthData = globalAttendanceData[employeeId]?.[month] || {};
+  const dayData = monthData[dateKey];
+  
+  if (dayData && dayData.status) {
+    // Pre-select status
+    const statusConfig = STATUS_CONFIG[dayData.status];
+    document.getElementById('selectedStatusText').textContent = statusConfig.label;
+    document.querySelector('#statusDropdown .status-icon').className = `status-icon ${dayData.status}`;
+    document.querySelector('#statusDropdown .status-icon i').className = statusConfig.icon;
+    document.getElementById('statusDropdown').classList.add('selected');
+    selectedStatus = dayData.status;
+    
+    // Pre-fill overtime
+    if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+      document.getElementById('overtimeHours').value = dayData.overtimeHours;
+      document.getElementById('overtimeMultiplier').value = (dayData.overtimeMultiplier && dayData.overtimeMultiplier > 1) ? dayData.overtimeMultiplier : '';
+    }
+  }
+  
+  const modal = document.getElementById('statusModal');
+  modal.classList.add('active');
+  
+  modal.dataset.isFromTimeline = 'true';
+  modal.dataset.tempCurrentEmployee = tempCurrentEmployee ? tempCurrentEmployee.id : '';
+}
+
+function changeTimelineMonth(direction) {
+  timelineDate.setMonth(timelineDate.getMonth() + direction);
+  loadTimelineData();
+}
+
+function updateTimelineMonthDisplay() {
+  const monthElement = document.getElementById('timelineCurrentMonth');
+  const options = { month: 'long', year: 'numeric' };
+  monthElement.textContent = timelineDate.toLocaleDateString('vi-VN', options);
+}
+
+function filterTimelineByDepartment() {
+  loadTimelineData();
+}
+
+// ====================
+// STATISTICS PAGE
+// ====================
+
+function generateReport() {
+  const month = parseInt(document.getElementById('statsMonth').value);
+  const year = parseInt(document.getElementById('statsYear').value);
+  const department = document.getElementById('statsDepartment').value;
+  
+  const filteredEmployees = department ? 
+    globalEmployees.filter(emp => emp.department === department) : 
+    globalEmployees;
+  
+  // Nhóm theo bộ phận
+  const groupedByDept = {};
+  filteredEmployees.forEach(employee => {
+    const dept = employee.department || 'Không xác định';
+    if (!groupedByDept[dept]) {
+      groupedByDept[dept] = [];
+    }
+    
+    const employeeData = globalAttendanceData[employee.id];
+    const monthData = employeeData ? employeeData[month] : {};
+    const daysInMonth = new Date(year, month, 0).getDate();
+    
+    let present = 0, halfday = 0, absent = 0, late = 0, leave = 0, totalOvertimeHours = 0;
+    
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateKey = String(day).padStart(2, '0');
+      const dayData = monthData[dateKey];
+      
+      if (dayData && dayData.status) {
+        switch (dayData.status) {
+          case 'present': present++; break;
+          case 'halfday': halfday++; break;
+          case 'absent': absent++; break;
+          case 'late': late++; break;
+          case 'leave': leave++; break;
+        }
+        
+        if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+          totalOvertimeHours += dayData.overtimeHours * (dayData.overtimeMultiplier || 1);
+        }
+      }
+    }
+    
+    const totalWorked = present + (halfday * 0.5) + late;
+    const attendanceRate = daysInMonth > 0 ? Math.round((totalWorked / daysInMonth) * 100) : 0;
+    
+    groupedByDept[dept].push({
+      employee: employee,
+      present: present,
+      halfday: halfday,
+      absent: absent,
+      late: late,
+      leave: leave,
+      totalOvertimeHours: totalOvertimeHours,
+      totalWorked: totalWorked.toFixed(1),
+      daysInMonth: daysInMonth,
+      attendanceRate: attendanceRate
+    });
+  });
+  
+  renderReport(groupedByDept, month, year, department);
+}
+
+function renderReport(groupedByDept, month, year, department) {
+  const container = document.getElementById('statisticsContent');
+  
+  if (Object.keys(groupedByDept).length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-chart-bar"></i>
+        <h3>Không có dữ liệu báo cáo</h3>
+      </div>
+    `;
+    return;
+  }
+  
+  const monthName = new Date(year, month - 1).toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' });
+  const departmentText = department ? ` - ${department}` : '';
+  
+  // Tính tổng
+  let totalEmployees = 0;
+  let totalPresent = 0, totalHalfday = 0, totalAbsent = 0, totalLate = 0, totalLeave = 0, totalOvertime = 0;
+  
+  Object.values(groupedByDept).forEach(employees => {
+    employees.forEach(item => {
+      totalEmployees++;
+      totalPresent += item.present;
+      totalHalfday += item.halfday;
+      totalAbsent += item.absent;
+      totalLate += item.late;
+      totalLeave += item.leave;
+      totalOvertime += item.totalOvertimeHours;
+    });
+  });
+  
+  let html = `
+    <div class="report-header">
+      <h3>Báo cáo Theo dõi tăng ca ${monthName}${departmentText}</h3>
+      <div class="report-summary">
+        <span class="summary-badge total">Nhân sự: ${totalEmployees}</span>
+        <span class="summary-badge present">Đủ công: ${totalPresent}</span>
+        <span class="summary-badge halfday">Nửa công: ${totalHalfday}</span>
+        <span class="summary-badge absent">Vắng mặt: ${totalAbsent}</span>
+        <span class="summary-badge late">Đi muộn: ${totalLate}</span>
+        <span class="summary-badge leave">Nghỉ phép: ${totalLeave}</span>
+      </div>
+    </div>
+    
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>Nhân sự</th>
+          <th>Đủ công</th>
+          <th>Nửa công</th>
+          <th>Vắng mặt</th>
+          <th>Đi muộn</th>
+          <th>Nghỉ phép</th>
+          <th>Giờ TC</th>
+          <th>Tổng ngày làm</th>
+          <th>Tỷ lệ điểm danh</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+  
+  Object.keys(groupedByDept).sort().forEach(dept => {
+    html += `
+      <tr class="department-row">
+        <td colspan="9"><strong>${dept}</strong></td>
+      </tr>
+    `;
+    
+    groupedByDept[dept].forEach(item => {
+      const rateClass = item.attendanceRate >= 90 ? 'excellent' : 
+                      item.attendanceRate >= 70 ? 'good' : 'poor';
+      
+      // Avatar HTML
+      const initials = item.employee.name.split(' ').map(n => n[0]).join('').toUpperCase();
+      let avatarHtml;
+      if (item.employee.avatar) {
+        const avatarUrl = convertGoogleDriveUrl(item.employee.avatar); // THÊM
+        avatarHtml = `<img src="${avatarUrl}" alt="${item.employee.name}" class="report-avatar" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';">
+                      <div class="report-avatar-fallback" style="display:none;">${initials}</div>`;
+      } else {
+        avatarHtml = `<div class="report-avatar-fallback">${initials}</div>`;
+      }
+      
+      html += `
+        <tr>
+          <td class="report-name-cell">
+            <div class="report-name-wrapper">
+              ${avatarHtml}
+              <span>${item.employee.name}</span>
+            </div>
+          </td>
+          <td>${item.present}</td>
+          <td>${item.halfday}</td>
+          <td>${item.absent}</td>
+          <td>${item.late}</td>
+          <td>${item.leave}</td>
+          <td>${item.totalOvertimeHours}</td>
+          <td><strong>${item.totalWorked}/${item.daysInMonth}</strong></td>
+          <td>
+            <span class="attendance-rate ${rateClass}">${item.attendanceRate}%</span>
+          </td>
+        </tr>
+      `;
+    });
+  });
+  
+  html += `
+      </tbody>
+      <tfoot>
+        <tr>
+          <td><strong>TỔNG CỘNG</strong></td>
+          <td>${totalPresent}</td>
+          <td>${totalHalfday}</td>
+          <td>${totalAbsent}</td>
+          <td>${totalLate}</td>
+          <td>${totalLeave}</td>
+          <td>${totalOvertime}</td>
+          <td>-</td>
+          <td>-</td>
+        </tr>
+      </tfoot>
+    </table>
+  `;
+  
+  container.innerHTML = html;
+}
+
+// ====================
+// EMPLOYEE MANAGEMENT
+// ====================
+
+function loadEmployeeList() {
+  const tbody = document.getElementById('employeeTableBody');
+  tbody.innerHTML = '';
+  
+  // Group by department
+  const groupedByDept = {};
+  globalEmployees.forEach(employee => {
+    const dept = employee.department || 'Không xác định';
+    if (!groupedByDept[dept]) {
+      groupedByDept[dept] = [];
+    }
+    groupedByDept[dept].push(employee);
+  });
+  
+  // Render by department
+  Object.keys(groupedByDept).sort().forEach(dept => {
+    // Department header row
+    const deptRow = document.createElement('tr');
+    deptRow.className = 'department-row';
+    deptRow.innerHTML = `<td colspan="7"><strong>${dept}</strong></td>`;
+    tbody.appendChild(deptRow);
+    
+    // Employee rows
+    groupedByDept[dept].forEach(employee => {
+      const row = createEmployeeRow(employee);
+      tbody.appendChild(row);
+    });
+  });
+}
+
+function createEmployeeRow(employee) {
+  const row = document.createElement('tr');
+  const maskedPassword = employee.password ? '*'.repeat(employee.password.length) : '';
+  
+  // Avatar HTML
+  let avatarHtml;
+  if (employee.avatar) {
+    const initials = employee.name.split(' ').map(n => n[0]).join('').toUpperCase();
+    const avatarUrl = convertGoogleDriveUrl(employee.avatar); // THÊM
+    avatarHtml = `<img src="${avatarUrl}" alt="${employee.name}" class="employee-avatar-table" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';">
+                  <div class="employee-avatar-table-fallback" style="display:none;">${initials}</div>`;
+  } else {
+    const initials = employee.name.split(' ').map(n => n[0]).join('').toUpperCase();
+    avatarHtml = `<div class="employee-avatar-table-fallback">${initials}</div>`;
+  }
+  
+  row.innerHTML = `
+    <td>${employee.code}</td>
+    <td class="employee-name-cell">
+      <div class="employee-name-wrapper">
+        ${avatarHtml}
+        <span>${employee.name}</span>
+      </div>
+    </td>
+    <td>${employee.username || ''}</td>
+    <td>${maskedPassword}</td>
+    <td><span class="badge ${employee.role === 'Admin' ? 'badge-admin' : 'badge-user'}">${employee.role || ''}</span></td>
+    <td class="actions">
+      <button class="btn btn-sm btn-outline" onclick="editEmployee('${employee.id}')">
+        <i class="fas fa-edit"></i>
+      </button>
+      <button class="btn btn-sm btn-danger" onclick="deleteEmployee('${employee.id}')">
+        <i class="fas fa-trash"></i>
+      </button>
+    </td>
+  `;
+  
+  return row;
+}
+
+function searchEmployees(e) {
+  const searchTerm = e.target.value.toLowerCase();
+  const rows = document.querySelectorAll('#employeeTableBody tr');
+  
+  rows.forEach(row => {
+    const name = row.cells[1].textContent.toLowerCase();
+    const department = row.cells[2].textContent.toLowerCase();
+    const code = row.cells[0].textContent.toLowerCase();
+    
+    if (name.includes(searchTerm) || department.includes(searchTerm) || code.includes(searchTerm)) {
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
+function openEmployeeModal(employeeId = null) {
+  const modal = document.getElementById('employeeModal');
+  const title = document.getElementById('modalTitle');
+  const form = document.getElementById('employeeForm');
+  
+  form.reset();
+  
+  if (employeeId) {
+    const employee = globalEmployees.find(emp => emp.id === employeeId);
+    title.textContent = 'Sửa Nhân sự';
+    document.getElementById('employeeCode').value = employee.code;
+    document.getElementById('modalEmployeeName').value = employee.name;
+    document.getElementById('employeeDept').value = employee.department;
+    document.getElementById('employeeUsername').value = employee.username || '';
+    document.getElementById('employeePassword').value = employee.password || '';
+    document.getElementById('employeeRole').value = employee.role || '';
+    document.getElementById('employeeAvatar').value = employee.avatar || '';
+    modal.dataset.employeeId = employeeId;
+  } else {
+    title.textContent = 'Thêm Nhân sự';
+    delete modal.dataset.employeeId;
+  }
+  
+  modal.classList.add('active');
+}
+
+function closeModal() {
+  const modal = document.getElementById('employeeModal');
+  modal.classList.remove('active');
+}
+
+async function saveEmployee() {
+  const modal = document.getElementById('employeeModal');
+  const form = document.getElementById('employeeForm');
+  
+  if (!form.checkValidity()) {
+    form.reportValidity();
+    return;
+  }
+  
+  const employeeData = {
+    code: document.getElementById('employeeCode').value,
+    name: document.getElementById('modalEmployeeName').value,
+    department: document.getElementById('employeeDept').value.trim().replace(/\s+/g, ' ').toUpperCase(),
+    username: document.getElementById('employeeUsername').value,
+    password: document.getElementById('employeePassword').value,
+    role: document.getElementById('employeeRole').value,
+    avatar: document.getElementById('employeeAvatar').value
+  };
+  
+  const employeeId = modal.dataset.employeeId;
+  
+  // OPTIMISTIC UPDATE
+  if (employeeId) {
+    // Update existing
+    const index = globalEmployees.findIndex(emp => emp.id === employeeId);
+    if (index !== -1) {
+      globalEmployees[index] = { id: employeeId, ...employeeData };
+    }
+    showToast('Đã cập nhật Nhân sự thành công', 'success');
+  } else {
+    // Add new
+    const maxId = Math.max(...globalEmployees.map(e => parseInt(e.id.substring(2)) || 0), 0);
+    const newId = `ID${String(maxId + 1).padStart(3, '0')}`;
+    const newEmployee = { id: newId, code: employeeData.code || newId, ...employeeData };
+    globalEmployees.push(newEmployee);
+    
+    if (!globalAttendanceData[newId]) {
+      globalAttendanceData[newId] = {};
+      for (let m = 1; m <= 12; m++) {
+        globalAttendanceData[newId][m] = {};
+      }
+    }
+    showToast('Đã thêm Nhân sự thành công', 'success');
+  }
+  
+  closeModal();
+  // THÊM: Cập nhật avatar ngay ở tab Theo dõi tăng ca
+  if (currentEmployee && currentEmployee.id === (employeeId || modal.dataset.employeeId)) {
+    currentEmployee = globalEmployees.find(emp => emp.id === (employeeId || modal.dataset.employeeId));
+    if (currentEmployee) showEmployeeInfo();
+  }
+  globalDepartments = [...new Set(globalEmployees.map(emp => emp.department))].filter(d => d && d.trim() !== '');
+  updateAllUISelectors();
+  loadEmployeeList();
+  
+  // SYNC SERVER sau 1.5s
+  setTimeout(async () => {
+    try {
+      let result;
+      if (employeeId) {
+        result = await callServerFunction('updateEmployee', employeeId, employeeData);
+      } else {
+        result = await callServerFunction('addEmployee', employeeData);
+      }
+      
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+    } catch (error) {
+      console.error('Error syncing employee:', error);
+      showToast('Lỗi đồng bộ: ' + error.message, 'error');
+    }
+  }, 1500);
+}
+
+function editEmployee(employeeId) {
+  openEmployeeModal(employeeId);
+}
+
+async function deleteEmployee(employeeId) {
+  const employee = globalEmployees.find(emp => emp.id === employeeId);
+  const message = `Bạn có chắc muốn xóa Nhân sự "${employee.name}"?`;
+  
+  if (await showConfirm(message)) {
+    // OPTIMISTIC DELETE
+    globalEmployees = globalEmployees.filter(emp => emp.id !== employeeId);
+    delete globalAttendanceData[employeeId];
+    
+    showToast('Đã xóa Nhân sự thành công', 'success');
+    
+    globalDepartments = [...new Set(globalEmployees.map(emp => emp.department))].filter(d => d && d.trim() !== '');
+    updateAllUISelectors();
+    loadEmployeeList();
+    
+    // SYNC SERVER sau 1.5s
+    setTimeout(async () => {
+      try {
+        const result = await callServerFunction('deleteEmployee', employeeId);
+        
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+      } catch (error) {
+        console.error('Error syncing delete:', error);
+        showToast('Lỗi đồng bộ: ' + error.message, 'error');
+      }
+    }, 1500);
+  }
+}
+
+// ====================
+// EXPORT TO EXCEL
+// ====================
+
+async function exportTimelineToExcel() {
+  try {
+    showLoading(true);
+    
+    const month = timelineDate.getMonth() + 1;
+    const year = timelineDate.getFullYear();
+    const departmentFilter = document.getElementById('departmentFilter').value;
+    
+    const filteredData = departmentFilter ? 
+      globalEmployees.filter(emp => emp.department === departmentFilter) : 
+      globalEmployees;
+    
+    if (filteredData.length === 0) {
+      showToast('Không có dữ liệu để xuất', 'warning');
+      return;
+    }
+    
+    const wb = XLSX.utils.book_new();
+    const wsData = [];
+    
+    const daysInMonth = new Date(year, month, 0).getDate();
+    
+    const headerDays = ['STT', 'Mã NV', 'Tên nhân viên', 'Bộ phận'];
+    for (let day = 1; day <= daysInMonth; day++) {
+      headerDays.push(day.toString());
+    }
+    headerDays.push('Công', 'Vắng mặt', 'Đi muộn', 'Nghỉ phép', 'Giờ TC');
+    wsData.push(headerDays);
+    
+    const headerWeekdays = ['', '', '', ''];
+    const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+    
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(year, month - 1, day);
+      const dayOfWeek = date.getDay();
+      headerWeekdays.push(dayNames[dayOfWeek]);
+    }
+    headerWeekdays.push('', '', '', '', '');
+    wsData.push(headerWeekdays);
+    
+    const groupedByDept = {};
+    filteredData.forEach(emp => {
+      if (!groupedByDept[emp.department]) {
+        groupedByDept[emp.department] = [];
+      }
+      groupedByDept[emp.department].push(emp);
+    });
+    
+    let stt = 1;
+    
+    Object.keys(groupedByDept).forEach(dept => {
+      const deptRow = [dept, '', '', ''];
+      for (let i = 0; i < daysInMonth + 5; i++) {
+        deptRow.push('');
+      }
+      wsData.push(deptRow);
+      
+      groupedByDept[dept].forEach(employee => {
+        const row = [
+          stt++,
+          employee.code,
+          employee.name,
+          employee.department
+        ];
+        
+        let presentCount = 0, absentCount = 0, lateCount = 0, leaveCount = 0, totalOvertimeHours = 0;
+        
+        const employeeData = globalAttendanceData[employee.id];
+        const monthData = employeeData ? employeeData[month] : {};
+        
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateKey = String(day).padStart(2, '0');
+          const date = new Date(year, month - 1, day);
+          const dayOfWeek = date.getDay();
+          const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+          const dayData = monthData[dateKey];
+          
+          if (dayData && dayData.status) {
+            const statusConfig = STATUS_CONFIG[dayData.status];
+            let cellText = statusConfig.label;
+            
+            if (dayData.overtimeHours && dayData.overtimeHours > 0) {
+              cellText += ` + TC: ${dayData.overtimeHours}h(x${dayData.overtimeMultiplier})`;
+              totalOvertimeHours += dayData.overtimeHours * dayData.overtimeMultiplier;
+            }
+            
+            if (isWeekend) {
+              cellText += ' (CN)';
+            }
+            
+            row.push(cellText);
+            
+            switch (dayData.status) {
+              case ATTENDANCE_STATUS.PRESENT:
+                presentCount++;
+                break;
+              case 'halfday':
+                presentCount += 0.5;
+                break;
+              case ATTENDANCE_STATUS.ABSENT:
+                absentCount++;
+                break;
+              case ATTENDANCE_STATUS.LATE:
+                lateCount++;
+                break;
+              case ATTENDANCE_STATUS.LEAVE:
+                leaveCount++;
+                break;
+            }
+          } else {
+            row.push('');
+          }
+        }
+        
+        row.push(
+          presentCount,
+          absentCount,
+          lateCount,
+          leaveCount,
+          totalOvertimeHours
+        );
+        
+        wsData.push(row);
+      });
+    });
+    
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    
+    ws['!cols'] = [
+      {wch: 5},
+      {wch: 8},
+      {wch: 20},
+      {wch: 15},
+    ];
+    
+    for (let i = 0; i < daysInMonth; i++) {
+      ws['!cols'].push({wch: 12});
+    }
+    
+    ws['!cols'].push({wch: 8}, {wch: 8}, {wch: 8}, {wch: 8}, {wch: 10});
+    
+    const sheetName = departmentFilter || 'Tất cả';
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    
+    const fileName = departmentFilter ?
+      `ChamCong_${departmentFilter}_Thang${month}_${year}.xlsx` :
+      `ChamCong_TatCa_Thang${month}_${year}.xlsx`;
+    
+    XLSX.writeFile(wb, fileName);
+    
+    showToast('Đã tải file Excel thành công', 'success');
+    
+  } catch (error) {
+    console.error('Error exporting to Excel:', error);
+    showToast('Lỗi xuất file Excel: ' + error.message, 'error');
+  } finally {
+    showLoading(false);
+  }
+}
+
+// ====================
+// UTILITY FUNCTIONS
+// ====================
+
+function showLoading(show) {
+  const loading = document.getElementById('loading');
+  loading.style.display = show ? 'flex' : 'none';
+}
+
+function updateCurrentDate() {
+  const dateElement = document.getElementById('currentDate');
+  const options = { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  };
+  dateElement.textContent = currentDate.toLocaleDateString('vi-VN', options);
+}
+
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('confirmModal');
+    const messageElement = document.getElementById('confirmMessage');
+    
+    messageElement.textContent = message;
+    modal.classList.add('active');
+    
+    const handleConfirm = () => {
+      modal.classList.remove('active');
+      cleanup();
+      resolve(true);
+    };
+    
+    const handleCancel = () => {
+      modal.classList.remove('active');
+      cleanup();
+      resolve(false);
+    };
+    
+    const cleanup = () => {
+      document.getElementById('confirmOk').removeEventListener('click', handleConfirm);
+      document.getElementById('confirmCancel').removeEventListener('click', handleCancel);
+    };
+    
+    document.getElementById('confirmOk').addEventListener('click', handleConfirm);
+    document.getElementById('confirmCancel').addEventListener('click', handleCancel);
+  });
+}
+
+function closeConfirmModal() {
+  const modal = document.getElementById('confirmModal');
+  modal.classList.remove('active');
+}
+
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  
+  let icon;
+  switch(type) {
+    case 'success': icon = 'fas fa-check-circle'; break;
+    case 'error': icon = 'fas fa-exclamation-circle'; break;
+    case 'warning': icon = 'fas fa-exclamation-triangle'; break;
+    default: icon = 'fas fa-info-circle';
+  }
+  
+  toast.innerHTML = `
+    <i class="${icon}"></i>
+    <span>${message}</span>
+  `;
+  
+  container.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.remove();
+  }, 5000);
+  
+  toast.addEventListener('click', () => {
+    toast.remove();
+  });
+}
+
+function callServerFunction(functionName, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(reject)
+      [functionName](...args);
+  });
+}
+
+async function syncPendingChanges() {
+  if (pendingChanges.length === 0) return;
+  
+  try {
+    pendingChanges = [];
+  } catch (error) {
+    console.error('Error syncing pending changes:', error);
+  }
+}
+
+function changeMultiDateMonth(direction) {
+  multiDatePickerDate.setMonth(multiDatePickerDate.getMonth() + direction);
+  renderMultiDateCalendar();
+}
+
+function convertGoogleDriveUrl(url) {
+  if (!url) return '';
+  
+  // Nếu đã là thumbnail URL, return luôn
+  if (url.includes('/thumbnail?id=')) return url;
+  
+  // Chuyển đổi từ /file/d/{ID}/view sang /thumbnail?id={ID}
+  const match = url.match(/\/file\/d\/([^\/]+)/);
+  if (match && match[1]) {
+    return `https://drive.google.com/thumbnail?id=${match[1]}`;
+  }
+  
+  // Nếu không phải Google Drive URL, return nguyên
+  return url;
+}
+
+window.addEventListener('resize', function() {
+  if (window.innerWidth > 768) {
+    closeSidebar();
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    closeStatusModal();
+    closeModal();
+    closeConfirmModal();
+    closeSidebar();
+  }
+});
+
+window.addEventListener('beforeunload', function(e) {
+  if (pendingChanges.length > 0) {
+    e.preventDefault();
+    e.returnValue = 'Bạn có thay đổi chưa được lưu. Bạn có chắc muốn rời khỏi trang?';
+  }
+});
+
+window.editEmployee = editEmployee;
+window.deleteEmployee = deleteEmployee;
+window.toggleTimelineAttendance = toggleTimelineAttendance;
+window.changeMultiDateMonth = changeMultiDateMonth;
+</script>
